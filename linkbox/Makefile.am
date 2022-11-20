@@ -44,6 +44,7 @@ tlb_SOURCES = ports.cpp ctcss.c ctcss.h devinput.cpp devinput.h\
         configvars.cpp ports.h usbdev.h ToneGen.h ToneGen.cpp voip.cpp \
         voip.h nodes.h nodes.cpp linkbox.h filters.cpp filters.h \
         Ctext.cpp Ctext.h radio_ctrl.h dh.cpp ulaw2linear.h ulaw.c \
+        usrp.cpp usrp.h \
         devices.h devices.cpp
         
 
@@ -65,13 +66,19 @@ AM_CPPFLAGS = -I$(top_srcdir)/inc -I$(top_srcdir)/gsm/inc -DLINK_BOX \
 AM_CFLAGS = -Wall -DSYSCON_DIR=\"$(sysconfdir)\"
 AM_CXXFLAGS = $(AM_CFLAGS)
 
-tlb_LDADD += -lm
+tlb_LDADD += -lm -lpthread
 
 if USB_SUPPORT
 tlb_SOURCES += usbdev.cpp
 tlb_LDADD += -lusb
 AM_CPPFLAGS += -DUSB_SUPPORT 
 endif
+
+#if USRP_SUPPORT
+#AM_CPPFLAGS += -DUSRP_SUPPORT 
+#endif
+
+AM_CPPFLAGS += -DUSRP_SUPPORT 
 
 if USE_DMALLOC
 AM_CFLAGS += -DUSE_DMALLOC

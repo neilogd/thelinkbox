@@ -283,6 +283,10 @@ public:
    CText RxToneDesc;
    CText TxToneDesc;
 
+#ifdef USRP_SUPPORT
+   class CUSRP *Usrp;
+#endif USRP_SUPPORT
+
 private:
    struct timeval LastCOSPoll;
    struct timeval LastSpoke;

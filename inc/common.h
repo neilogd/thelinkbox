@@ -282,7 +282,8 @@ void LogHex(void *AdrIn,int Len);
 #define  ERR_CTCSS_RX_INIT       ERR_LOCAL_BASE + 26
 #define  ERR_SERIAL_SHARE_ERR    ERR_LOCAL_BASE + 27
 #define  ERR_NOT_SUPPORTED       ERR_LOCAL_BASE + 28
-#define  ERR_SPAWN_FAIL        ERR_LOCAL_BASE + 29
+#define  ERR_SPAWN_FAIL          ERR_LOCAL_BASE + 29
+#define  ERR_USRP_FAIL           ERR_LOCAL_BASE + 30
 
 
 /*

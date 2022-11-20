@@ -279,6 +279,7 @@
 #include "eventhook.h"
 #include "ctcss.h"
 #include "tbd.h"
+#include "usrp.h"
 
 #include "nodes.h"
 #include "devices.h"
@@ -428,6 +429,10 @@ CPort::CPort()
    VoiceID = NULL;
    AudioDevice = NULL;
    AudioDongleSN = NULL;
+
+#ifdef USRP_SUPPORT
+   Usrp = NULL;
+#endif
 
 // Init class variables
    bDevInCOS = FALSE;
@@ -1382,14 +1387,15 @@ void CPort::GetAudioIn(ClientInfo *p)
    u_int32 RingNdx;
 
    audio_buf_info BufInfo;
+
    if(ioctl(p->Socket,SNDCTL_DSP_GETISPACE,&BufInfo) == -1) {
       LOG_ERROR(("%s: SNDCTL_DSP_GETOSPACE failed: %s",__FUNCTION__,
-                 Err2String(errno)));
+               Err2String(errno)));
    }
    D3PRINTF(("%s: BufInfo: bytes: %d, fragments: %d/%d, fragsize: %d\n",__FUNCTION__,
-          BufInfo.bytes,
-          BufInfo.fragments,BufInfo.fragstotal,
-          BufInfo.fragsize));
+         BufInfo.bytes,
+         BufInfo.fragments,BufInfo.fragstotal,
+         BufInfo.fragsize));
 
    if(MinAudioWrite == -1) {
    // Assume the size of the first read in bytes is the MinAudioWrite
@@ -2121,6 +2127,7 @@ int CPort::AudioInit()
    int SampleSize = 16;
    int SampleRate;
    int Stereo = 0;
+   bool IsUSRPDevice = 0;
 #ifndef BIG_ENDIAN_MACHINE
    int Fmt = AFMT_S16_LE;
 #else
@@ -2227,80 +2234,96 @@ int CPort::AudioInit()
       pAudioC->State = ::Audio_Handler;
       pAudioC->p = this;
 
-      LOG_ERROR(("%s#%d: opening \"%s\"\n",__FUNCTION__,__LINE__,AudioDevice));
+#ifdef USRP_SUPPORT
+      IsUSRPDevice = strstr(AudioDevice, "USRP") != NULL;
+      if(IsUSRPDevice)
+      {
+         Usrp = new CUSRP;
+         Ret = Usrp->Init(AudioDevice);
+         if(Ret != 0) {
+            LOG_ERROR(("%s#%d: failed to initialize USRP \"%s\"\n",__FUNCTION__,__LINE__,AudioDevice));
+         }
 
-      if((pAudioC->Socket = open(AudioDevice,AUDIO_OPEN_FLAGS)) < 0) {
-         LOG_ERROR(("%s#%d: open(\"%s\") failed: %s",__FUNCTION__,__LINE__,AudioDevice,
-                   Err2String(errno)));
-         Ret = ERR_AUDIO_DEV_OPEN;
-         break;
+         // 
       }
+      else
+#endif // #ifdef USRP_SUPPORT
+      {
+         LOG_ERROR(("%s#%d: opening \"%s\"\n",__FUNCTION__,__LINE__,AudioDevice));
 
-      if(ioctl(pAudioC->Socket,SNDCTL_DSP_SETDUPLEX,NULL) == -1) {
-      // Failure is not necessarily fatal.
-      // FreeBSD doesn't require this call for fullduplex
-         LOG_WARN(("%s: SNDCTL_DSP_SETDUPLEX failed: %s",__FUNCTION__,
-                   Err2String(errno)));
-      }
+         if((pAudioC->Socket = open(AudioDevice,AUDIO_OPEN_FLAGS)) < 0) {
+            LOG_ERROR(("%s#%d: open(\"%s\") failed: %s",__FUNCTION__,__LINE__,AudioDevice,
+                     Err2String(errno)));
+            Ret = ERR_AUDIO_DEV_OPEN;
+            break;
+         }
 
-      if(ioctl(pAudioC->Socket,SNDCTL_DSP_GETFMTS,&bits) == -1) {
-         LOG_WARN(("%s: SNDCTL_DSP_GETFMTS failed: %s",__FUNCTION__,
-                   Err2String(errno)));
-      }
-      else if(!(bits & AFMT_S16_LE)) {
-         LOG_ERROR(("%s: Error AFMT_S16_LE not supported\n",__FUNCTION__));
-         Ret = ERR_AUDIO_FMT;
-         break;
-      }
+         if(ioctl(pAudioC->Socket,SNDCTL_DSP_SETDUPLEX,NULL) == -1) {
+         // Failure is not necessarily fatal.
+         // FreeBSD doesn't require this call for fullduplex
+            LOG_WARN(("%s: SNDCTL_DSP_SETDUPLEX failed: %s",__FUNCTION__,
+                     Err2String(errno)));
+         }
 
-      if(ioctl(pAudioC->Socket,SNDCTL_DSP_SAMPLESIZE,&SampleSize) == -1) {
-         LOG_ERROR(("%s: SNDCTL_DSP_SAMPLESIZE failed: %s",__FUNCTION__,
-                    Err2String(errno)));
-         Ret = ERR_AUDIO_FMT;
-         break;
-      }
-
-      if(ioctl(pAudioC->Socket,SNDCTL_DSP_STEREO,&Stereo) == -1) {
-         LOG_ERROR(("%s: SNDCTL_DSP_STEREO failed: %s",__FUNCTION__,
-                    Err2String(errno)));
-         Ret = ERR_AUDIO_FMT;
-         break;
-      }
-
-      SampleRate = PCMRate;
-      if(ioctl(pAudioC->Socket,SNDCTL_DSP_SPEED,&SampleRate) == -1) {
-         LOG_ERROR(("%s: SNDCTL_DSP_SPEED failed: %s",__FUNCTION__,
-                    Err2String(errno)));
-         Ret = ERR_AUDIO_FMT;
-         break;
-      }
-
-      LOG_WARN(("%s: Asked for a sampling rate of %d, got %d\n",__FUNCTION__,
-                PCMRate,SampleRate));
-
-      if(SampleRate != PCMRate && PCMRate != 48000) {
-         if(DisableRateConversion) {
-            LOG_ERROR(("%s: Couldn't set sampling rate and rate conversion "
-                       "is disabled\n",__FUNCTION__));
+         if(ioctl(pAudioC->Socket,SNDCTL_DSP_GETFMTS,&bits) == -1) {
+            LOG_WARN(("%s: SNDCTL_DSP_GETFMTS failed: %s",__FUNCTION__,
+                     Err2String(errno)));
+         }
+         else if(!(bits & AFMT_S16_LE)) {
+            LOG_ERROR(("%s: Error AFMT_S16_LE not supported\n",__FUNCTION__));
             Ret = ERR_AUDIO_FMT;
             break;
          }
-      // Try 48k
-         SampleRate = PCMRate = 48000;
+
+         if(ioctl(pAudioC->Socket,SNDCTL_DSP_SAMPLESIZE,&SampleSize) == -1) {
+            LOG_ERROR(("%s: SNDCTL_DSP_SAMPLESIZE failed: %s",__FUNCTION__,
+                     Err2String(errno)));
+            Ret = ERR_AUDIO_FMT;
+            break;
+         }
+
+         if(ioctl(pAudioC->Socket,SNDCTL_DSP_STEREO,&Stereo) == -1) {
+            LOG_ERROR(("%s: SNDCTL_DSP_STEREO failed: %s",__FUNCTION__,
+                     Err2String(errno)));
+            Ret = ERR_AUDIO_FMT;
+            break;
+         }
+
+         SampleRate = PCMRate;
          if(ioctl(pAudioC->Socket,SNDCTL_DSP_SPEED,&SampleRate) == -1) {
             LOG_ERROR(("%s: SNDCTL_DSP_SPEED failed: %s",__FUNCTION__,
-                       Err2String(errno)));
+                     Err2String(errno)));
             Ret = ERR_AUDIO_FMT;
             break;
          }
-         LOG_WARN(("%s: Asked for a sampling rate of %d, got %d\n",
-                   __FUNCTION__,PCMRate,SampleRate));
 
-         if(SampleRate != 48000) {
-            LOG_ERROR(("%s: Unable to find supported sampling rate\n",
-                       __FUNCTION__));
-            Ret = ERR_AUDIO_FMT;
-            break;
+         LOG_WARN(("%s: Asked for a sampling rate of %d, got %d\n",__FUNCTION__,
+                  PCMRate,SampleRate));
+
+         if(SampleRate != PCMRate && PCMRate != 48000) {
+            if(DisableRateConversion) {
+               LOG_ERROR(("%s: Couldn't set sampling rate and rate conversion "
+                        "is disabled\n",__FUNCTION__));
+               Ret = ERR_AUDIO_FMT;
+               break;
+            }
+         // Try 48k
+            SampleRate = PCMRate = 48000;
+            if(ioctl(pAudioC->Socket,SNDCTL_DSP_SPEED,&SampleRate) == -1) {
+               LOG_ERROR(("%s: SNDCTL_DSP_SPEED failed: %s",__FUNCTION__,
+                        Err2String(errno)));
+               Ret = ERR_AUDIO_FMT;
+               break;
+            }
+            LOG_WARN(("%s: Asked for a sampling rate of %d, got %d\n",
+                     __FUNCTION__,PCMRate,SampleRate));
+
+            if(SampleRate != 48000) {
+               LOG_ERROR(("%s: Unable to find supported sampling rate\n",
+                        __FUNCTION__));
+               Ret = ERR_AUDIO_FMT;
+               break;
+            }
          }
       }
 
