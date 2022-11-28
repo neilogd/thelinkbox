@@ -4,6 +4,7 @@
 #include "main.h"
 #include "hostfile.h"
 
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <unistd.h>
@@ -91,6 +92,12 @@ int CUSRP::Init(char *AudioDevice)
 }
 
 
+bool CUSRP::PollCOS()
+{
+    // TODO: Mutex.
+    return InHeader.Ptt;
+}
+
 //static
 void* CUSRP::StaticSendMain( void* pParam )
 {
@@ -122,6 +129,19 @@ void* CUSRP::SendMain()
     return NULL;
 }
 
+
+int CUSRP::Read(short *OutData, int MaxRead)
+{
+    const int READ_SIZE = USRP_VOICE_FRAME_SIZE * sizeof(short); 
+    assert(MaxRead >= READ_SIZE);
+
+    memcpy(OutData, &InAudioBuffer[InAudioBufferReadOff], READ_SIZE);
+    InAudioBufferReadOff = (InAudioBufferReadOff + USRP_VOICE_FRAME_SIZE) % USRP_VOICE_BUFFER_SIZE;
+
+    return READ_SIZE;
+}
+
+
 void* CUSRP::RecvMain()
 {
     int InBytesRead;
@@ -145,6 +165,9 @@ void* CUSRP::RecvMain()
                 LOG_NORM(("%s#%d: USRP Packet out of sequence, size %i\n",__FUNCTION__,__LINE__, InBytesRead));
                 continue;
             }
+
+            // TODO: Mutex.
+            InHeader = *UsrpHeader;
 
             switch(UsrpHeader->Type)
             {

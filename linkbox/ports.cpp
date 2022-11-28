@@ -659,6 +659,17 @@ void CPort::KeyTx(int bKey)
 
 
          break;
+
+#ifdef USRP_SUPPORT
+      case 8:
+         if(Usrp == NULL) {
+            LOG_ERROR(("%s: Error, no USRP device.",__FUNCTION__));
+            break;
+         }
+
+         //Usrp->KeyTx(bKey);
+         break;
+#endif // #ifdef USRP_SUPPORT
    }
 }
 
@@ -849,31 +860,43 @@ int CPort::WriteAudioOut(ClientInfo *p)
    int MasterSamples = 0;
    int SlaveSamples = 0;
    int SamplesAvailable;
+   bool IsUSRPDevice = Usrp != NULL;
 
    for( ;  ;) {
       SamplesAvailable = 0;
-      if(ioctl(p->Socket,SNDCTL_DSP_GETOSPACE,&BufInfo) == -1) {
-         LOG_ERROR(("%s: SNDCTL_DSP_GETOSPACE failed: %s",__FUNCTION__,
-                    Err2String(errno)));
-         break;
+#ifdef USRP_SUPPORT
+      if(IsUSRPDevice)
+      {
+         SamplesNeeded = USRP_VOICE_FRAME_SIZE;
+         bConvertSampleRate = FALSE;     
       }
-      D3PRINTF(("BufInfo1: bytes: %d, fragments: %d, fragsize: %d\n",
-                BufInfo.bytes,BufInfo.fragments,BufInfo.fragsize));
+      else
+#endif // #ifdef USRP_SUPPORT
+      {
+         if(ioctl(p->Socket,SNDCTL_DSP_GETOSPACE,&BufInfo) == -1) {
+            LOG_ERROR(("%s: SNDCTL_DSP_GETOSPACE failed: %s",__FUNCTION__,
+                     Err2String(errno)));
+            break;
+         }
+         D3PRINTF(("BufInfo1: bytes: %d, fragments: %d, fragsize: %d\n",
+                  BufInfo.bytes,BufInfo.fragments,BufInfo.fragsize));
 
-      if(BufInfo.fragments == 0) {
-         D3PRINTF(("BufInfo: bytes: %d, fragments: %d, fragsize: %d, bailing\n",
-                   BufInfo.bytes,BufInfo.fragments,BufInfo.fragsize));
-         p->bWriteWait = FALSE;
-         break;
-      }
-      SamplesNeeded = BufInfo.fragsize / sizeof(int16);
+         if(BufInfo.fragments == 0) {
+            D3PRINTF(("BufInfo: bytes: %d, fragments: %d, fragsize: %d, bailing\n",
+                     BufInfo.bytes,BufInfo.fragments,BufInfo.fragsize));
+            p->bWriteWait = FALSE;
+            break;
+         }
+         SamplesNeeded = BufInfo.fragsize / sizeof(int16);
 
-      if(AudioChannel != 0) {
-         SamplesNeeded /= 2;
+         if(AudioChannel != 0) {
+            SamplesNeeded /= 2;
+         }
+         else if(bConvertSampleRate) {
+            SamplesNeeded /= 6;
+         }
       }
-      else if(bConvertSampleRate) {
-         SamplesNeeded /= 6;
-      }
+
 
    // Limit request to the minimum amount of "live" audio that's available
    // if any "live" audio is available
@@ -1052,47 +1075,56 @@ int CPort::WriteAudioOut(ClientInfo *p)
       while(WriteSize > 0) {
          int Bytes2Write;
 
-         Bytes2Write = min(BufInfo.fragsize,WriteSize);
-         wrote = write(p->Socket,pWriteData,Bytes2Write);
+#ifdef USRP_SUPPORT
+         if(IsUSRPDevice)
+         {
+            // Write to USRP, plus the COS, PTT, etc... status.
+         }
+         else
+#endif // #ifdef USRP_SUPPORT
+         {
+            Bytes2Write = min(BufInfo.fragsize,WriteSize);
+            wrote = write(p->Socket,pWriteData,Bytes2Write);
 
-         D3PRINTF(("Wr: requested %d, wrote %d/%d, pid: %d\n",Bytes2Write,wrote,
-                BufInfo.bytes,(int) getpid()));
+            D3PRINTF(("Wr: requested %d, wrote %d/%d, pid: %d\n",Bytes2Write,wrote,
+                  BufInfo.bytes,(int) getpid()));
 
-         if(wrote <= 0) {
-            if(errno == EAGAIN) {
-               WriteWaits++;
-               p->bWriteWait = TRUE;
-               D2PRINTF(("W"));
+            if(wrote <= 0) {
+               if(errno == EAGAIN) {
+                  WriteWaits++;
+                  p->bWriteWait = TRUE;
+                  D2PRINTF(("W"));
+               }
+               else {
+                  LOG_ERROR(("WriteAudioOut(): write() failed: %s",
+                           Err2String(errno)));
+               }
+               break;
             }
             else {
-               LOG_ERROR(("WriteAudioOut(): write() failed: %s",
-                          Err2String(errno)));
+               if(DebugFpAudioOut != NULL) {
+                  fwrite(pWriteData,wrote,1,DebugFpAudioOut);
+               }
+               else if(pAudioSlave != NULL &&
+                     pAudioSlave->DebugFpAudioOut != NULL)
+               {
+                  fwrite(pWriteData,wrote,1,pAudioSlave->DebugFpAudioOut);
+               }
+               D2PRINTF(("w"));
+               HangTimer.tv_sec = 0;
+               if(pAudioSlave != NULL) {
+                  pAudioSlave->HangTimer.tv_sec = 0;
+               }
+               Ret = TRUE;
             }
-            break;
-         }
-         else {
-            if(DebugFpAudioOut != NULL) {
-               fwrite(pWriteData,wrote,1,DebugFpAudioOut);
+            pWriteData += wrote;
+            WriteSize -= wrote;
+            if(MasterSamples > 0 && !bTxKeyed) {
+               KeyTx(TRUE);
             }
-            else if(pAudioSlave != NULL &&
-                    pAudioSlave->DebugFpAudioOut != NULL)
-            {
-               fwrite(pWriteData,wrote,1,pAudioSlave->DebugFpAudioOut);
+            if(SlaveSamples > 0 && !pAudioSlave->bTxKeyed) {
+               pAudioSlave->KeyTx(TRUE);
             }
-            D2PRINTF(("w"));
-            HangTimer.tv_sec = 0;
-            if(pAudioSlave != NULL) {
-               pAudioSlave->HangTimer.tv_sec = 0;
-            }
-            Ret = TRUE;
-         }
-         pWriteData += wrote;
-         WriteSize -= wrote;
-         if(MasterSamples > 0 && !bTxKeyed) {
-            KeyTx(TRUE);
-         }
-         if(SlaveSamples > 0 && !pAudioSlave->bTxKeyed) {
-            pAudioSlave->KeyTx(TRUE);
          }
       }
 
@@ -1385,25 +1417,35 @@ void CPort::GetAudioIn(ClientInfo *p)
    u_int32 i;
    u_int32 NewSamples;
    u_int32 RingNdx;
+   bool IsUSRPDevice = Usrp != NULL;
 
    audio_buf_info BufInfo;
-
-   if(ioctl(p->Socket,SNDCTL_DSP_GETISPACE,&BufInfo) == -1) {
-      LOG_ERROR(("%s: SNDCTL_DSP_GETOSPACE failed: %s",__FUNCTION__,
-               Err2String(errno)));
+#ifdef USRP_SUPPORT
+   if(IsUSRPDevice)
+   {
+      MinAudioWrite = USRP_VOICE_FRAME_SIZE * sizeof(short);
+      bConvertSampleRate = FALSE;     
    }
-   D3PRINTF(("%s: BufInfo: bytes: %d, fragments: %d/%d, fragsize: %d\n",__FUNCTION__,
-         BufInfo.bytes,
-         BufInfo.fragments,BufInfo.fragstotal,
-         BufInfo.fragsize));
+   else
+#endif // #ifdef USRP_SUPPORT
+   {
+      if(ioctl(p->Socket,SNDCTL_DSP_GETISPACE,&BufInfo) == -1) {
+         LOG_ERROR(("%s: SNDCTL_DSP_GETOSPACE failed: %s",__FUNCTION__,
+                  Err2String(errno)));
+      }
+      D3PRINTF(("%s: BufInfo: bytes: %d, fragments: %d/%d, fragsize: %d\n",__FUNCTION__,
+            BufInfo.bytes,
+            BufInfo.fragments,BufInfo.fragstotal,
+            BufInfo.fragsize));
 
-   if(MinAudioWrite == -1) {
-   // Assume the size of the first read in bytes is the MinAudioWrite
-      MinAudioWrite = BufInfo.bytes;
-   }
-   else if(MinAudioWrite == -2) {
-   // Assume the size of the first read in whole fragments is the MinAudioWrite
-      MinAudioWrite = BufInfo.fragments * BufInfo.fragsize;
+      if(MinAudioWrite == -1) {
+      // Assume the size of the first read in bytes is the MinAudioWrite
+         MinAudioWrite = BufInfo.bytes;
+      }
+      else if(MinAudioWrite == -2) {
+      // Assume the size of the first read in whole fragments is the MinAudioWrite
+         MinAudioWrite = BufInfo.fragments * BufInfo.fragsize;
+      }
    }
 
 #ifndef  DEBUG_PCM_IN
@@ -1437,7 +1479,17 @@ void CPort::GetAudioIn(ClientInfo *p)
             MaxRead = AUDIO_BUF_SIZE_BYTES;
          }
       }
-      Read = read(p->Socket,pWriteData,MaxRead);
+
+#ifdef USRP_SUPPORT
+      if(IsUSRPDevice)
+      {
+         Read = Usrp->Read((short*)pWriteData,MaxRead);
+      }
+      else
+#endif // #ifdef USRP_SUPPORT
+      {
+         Read = read(p->Socket,pWriteData,MaxRead);
+      }
 
       if(Read > 0 && DebugFpRawAudioPB != NULL) {
          int DummyRead = fread(pWriteData,1,Read,DebugFpRawAudioPB);
@@ -1632,6 +1684,17 @@ void CPort::PollCOS()
          }
 #endif
          break;
+
+#ifdef USRP_SUPPORT
+      case 9:
+         if(Usrp == NULL) {
+            LOG_ERROR(("%s: Error, no USRP device.",__FUNCTION__));
+            break;
+         }
+
+         bCos = Usrp->PollCOS();
+         break;
+#endif // #ifdef USRP_SUPPORT
    }
 
 
@@ -2345,6 +2408,9 @@ int CPort::AudioInit()
                     __FUNCTION__,PCMRate,8000));
       }
 
+#ifdef USRP_SUPPORT
+      if(!IsUSRPDevice)
+#endif // #ifdef USRP_SUPPORT
       if(ioctl(pAudioC->Socket,SNDCTL_DSP_SETFMT,&Fmt) == -1) {
          LOG_ERROR(("%s: SNDCTL_DSP_SETFMT failed: %s",__FUNCTION__,
                     Err2String(errno)));
@@ -2352,41 +2418,46 @@ int CPort::AudioInit()
          break;
       }
 
+#ifdef USRP_SUPPORT
+      if(!IsUSRPDevice)
+#endif // #ifdef USRP_SUPPORT
+      {
 #ifndef SNDCTL_DSP_SETFRAGMENT
-      if(ioctl(pAudioC->Socket,SNDCTL_DSP_SETBLKSIZE,&BlkSz) == -1) {
-         LOG_ERROR(("%s: SNDCTL_DSP_SETBLKSIZE failed: %s",__FUNCTION__,
-                    Err2String(errno)));
-         Ret = ERR_AUDIO_FMT;
-         break;
-      }
+         if(ioctl(pAudioC->Socket,SNDCTL_DSP_SETBLKSIZE,&BlkSz) == -1) {
+            LOG_ERROR(("%s: SNDCTL_DSP_SETBLKSIZE failed: %s",__FUNCTION__,
+                     Err2String(errno)));
+            Ret = ERR_AUDIO_FMT;
+            break;
+         }
 #else
-      x = frag_size;
-      if(ioctl(pAudioC->Socket,SNDCTL_DSP_SETFRAGMENT,&frag_size) == -1) {
-         LOG_ERROR(("%s: SNDCTL_DSP_SETFRAGMENT failed: %s",__FUNCTION__,
-                    Err2String(errno)));
-         Ret = ERR_AUDIO_SET_FRAG;
-         break;
-      }
-      if(frag_size != x) {
-         LOG_ERROR(("%s: requested frag_size 0x%x, got 0x%x\n",__FUNCTION__,
-                    x,frag_size));
-      }
+         x = frag_size;
+         if(ioctl(pAudioC->Socket,SNDCTL_DSP_SETFRAGMENT,&frag_size) == -1) {
+            LOG_ERROR(("%s: SNDCTL_DSP_SETFRAGMENT failed: %s",__FUNCTION__,
+                     Err2String(errno)));
+            Ret = ERR_AUDIO_SET_FRAG;
+            break;
+         }
+         if(frag_size != x) {
+            LOG_ERROR(("%s: requested frag_size 0x%x, got 0x%x\n",__FUNCTION__,
+                     x,frag_size));
+         }
 #endif
 
-      if(ioctl(pAudioC->Socket,SNDCTL_DSP_GETOSPACE,&BufInfo) == -1) {
-         LOG_ERROR(("%s: SNDCTL_DSP_GETOSPACE failed: %s",__FUNCTION__,
-                    Err2String(errno)));
-         if(DriverAudioOutDelay < 0) {
-            DriverAudioOutDelay = 80;
+         if(ioctl(pAudioC->Socket,SNDCTL_DSP_GETOSPACE,&BufInfo) == -1) {
+            LOG_ERROR(("%s: SNDCTL_DSP_GETOSPACE failed: %s",__FUNCTION__,
+                     Err2String(errno)));
+            if(DriverAudioOutDelay < 0) {
+               DriverAudioOutDelay = 80;
+            }
          }
-      }
-      else {
-         LOG_ERROR(("Fragsize: %d, fragstotal: %d, bytes: %d\n",
-                    BufInfo.fragsize,BufInfo.fragstotal,BufInfo.bytes));
+         else {
+            LOG_ERROR(("Fragsize: %d, fragstotal: %d, bytes: %d\n",
+                     BufInfo.fragsize,BufInfo.fragstotal,BufInfo.bytes));
 
-         if(DriverAudioOutDelay < 0) {
-         // Calculate the delay in the sound device and driver in milliseconds
-            DriverAudioOutDelay = (BufInfo.bytes / 2) * 1000 / PCMRate;
+            if(DriverAudioOutDelay < 0) {
+            // Calculate the delay in the sound device and driver in milliseconds
+               DriverAudioOutDelay = (BufInfo.bytes / 2) * 1000 / PCMRate;
+            }
          }
       }
    } while(FALSE);
@@ -2418,9 +2489,10 @@ int CPort::EndPointInit()
 
 // ON1ARF
       7 - /sys/class/gpio/gpioXX/... GPIO writing
+      8 - USRP
 
    */
-      if(TxKeyMethod < 0 || TxKeyMethod > 7) {
+      if(TxKeyMethod < 0 || TxKeyMethod > 8) {
          LOG_ERROR(("%s: TxKeyMethod %d is invalid\n",__FUNCTION__,TxKeyMethod));
          Ret = ERR_CONFIG_FILE;
          break;
@@ -2447,9 +2519,10 @@ int CPort::EndPointInit()
          ; 6 - device supporting /dev/input such as USB HID (Linux only)
          ; 7 - USB device GPIO (use method 6 for the iMic)
          ; 8 - PCF8754 I2C expander on iMic
+         ; 9 - USRP
       */
 
-      if(RxCosMethod < 0 || RxCosMethod > 8) {
+      if(RxCosMethod < 0 || RxCosMethod > 9) {
          LOG_ERROR(("%s: RxCosMethod %d is invalid\n",__FUNCTION__,RxCosMethod));
          Ret = ERR_CONFIG_FILE;
          break;

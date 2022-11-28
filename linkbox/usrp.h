@@ -39,6 +39,9 @@ public:
     ~CUSRP();
 
     int Init(char *AudioDevice);
+    bool PollCOS();
+
+    int Read(short *OutData, int MaxRead);
 
 private:
 	static void* StaticSendMain( void* pParam );
@@ -54,10 +57,13 @@ private:
     int InSock;
     socklen_t InAddrLen;
 
-    uint32_t InSequenceNum;
+    uint32_t InSequenceNum;    
     short InAudioBuffer[USRP_VOICE_BUFFER_SIZE];
     int InAudioBufferWriteOff;
     int InAudioBufferReadOff;
+
+    // TODO: Buffer...?
+    USRPHeader InHeader;
 };
 
 
