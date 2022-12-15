@@ -14,7 +14,7 @@
 
 CUSRP::CUSRP()
 {
-
+    memset(&InHeader, 0, sizeof(InHeader));
 }
 
 
@@ -125,7 +125,7 @@ void* CUSRP::SendMain()
     UsrpHeader->Mpxid = 0;
     UsrpHeader->Reserved = 0;
     
-
+    LOG_NORM(("%s#%d: SendMain exit\n",__FUNCTION__,__LINE__));
     return NULL;
 }
 
@@ -138,7 +138,7 @@ int CUSRP::Read(short *OutData, int MaxRead)
     memcpy(OutData, &InAudioBuffer[InAudioBufferReadOff], READ_SIZE);
     InAudioBufferReadOff = (InAudioBufferReadOff + USRP_VOICE_FRAME_SIZE) % USRP_VOICE_BUFFER_SIZE;
 
-    return READ_SIZE;
+    return (bRunning && !bShutdown) ? 0 : 0;
 }
 
 
@@ -185,7 +185,9 @@ void* CUSRP::RecvMain()
                 break;
             }
         }
-    } while (InBytesRead > 0);
+       LOG_NORM(("%s#%d: RecvMain InBytesRead %i\n",__FUNCTION__,__LINE__, InBytesRead));
+    } while (InBytesRead > 0 && bRunning && !bShutdown);
 
+    LOG_NORM(("%s#%d: RecvMain exit\n",__FUNCTION__,__LINE__));
     return NULL;
 }
