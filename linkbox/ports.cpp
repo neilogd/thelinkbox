@@ -2302,22 +2302,9 @@ int CPort::AudioInit()
       if(IsUSRPDevice)
       {
          Usrp = new CUSRP;
-         Ret = Usrp->Init(AudioDevice);
+         Ret = Usrp->Init(NodeName, AudioDevice, pAudioC);
          if(Ret != 0) {
             LOG_ERROR(("%s#%d: failed to initialize USRP \"%s\"\n",__FUNCTION__,__LINE__,AudioDevice));
-         }
-
-         // Create & open a named pipe.
-         char PipeName[256];
-         sprintf(PipeName, "/tmp/%s_usrp_pipe", NodeName);
-         mkfifo(PipeName, O_RDWR);
-         chmod(PipeName, 0666);
-
-         if((pAudioC->Socket = open(PipeName,0666)) < 0) {
-            LOG_ERROR(("%s#%d: open(\"%s\") failed: %s",__FUNCTION__,__LINE__,PipeName,
-                     Err2String(errno)));
-            Ret = ERR_AUDIO_DEV_OPEN;
-            break;
          }
       }
       else

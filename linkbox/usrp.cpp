@@ -7,31 +7,91 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <errno.h>
 #include <unistd.h>
 #include <netdb.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <cmath>
+
+#include <mutex>
+
+struct CUSRPData
+{
+    uint32_t SequenceNum = 0;
+    short AudioBuffer[USRP_VOICE_BUFFER_FRAME_SIZE];        // 8kHz 16-bit signed
+    int AudioBufferWriteOff = 0;
+    int AudioBufferReadOff = 0;
+    int AudioFrames = 0;                                    
+    USRPHeader Header = {};                                 // TODO: Buffer...?
+
+
+    mutable std::mutex Mutex;
+
+    USRPHeader GetHeader() const
+    {
+        std::lock_guard<std::mutex> Lock( Mutex );
+        return Header;
+    }
+
+    int Read(short* FrameData, size_t BytesSize)
+    {
+        std::lock_guard<std::mutex> Lock( Mutex );
+        
+        const int READ_SIZE = USRP_VOICE_FRAME_SIZE * sizeof(short); 
+        assert(BytesSize >= READ_SIZE);
+
+        if( AudioFrames >= BytesSize )
+        {
+            memcpy(FrameData, &AudioBuffer[AudioBufferReadOff], BytesSize);
+            AudioBufferWriteOff = (AudioBufferWriteOff + BytesSize) % USRP_VOICE_BUFFER_FRAME_SIZE;
+            AudioFrames -= BytesSize / sizeof(short);
+            return BytesSize;
+        }
+        return 0;
+    }
+
+    int Write(const short* FrameData, size_t BytesSize)
+    {
+        std::lock_guard<std::mutex> Lock( Mutex );
+
+        if( AudioFrames < USRP_VOICE_BUFFER_FRAME_SIZE * sizeof(short) )
+        {
+            memcpy(&AudioBuffer[AudioBufferWriteOff], FrameData, BytesSize);
+            AudioBufferWriteOff = (AudioBufferWriteOff + BytesSize) % USRP_VOICE_BUFFER_FRAME_SIZE;
+            AudioFrames += BytesSize / sizeof(short);
+            return BytesSize;
+        }
+        return 0;
+    }
+
+
+};
+
 CUSRP::CUSRP()
 {
-    memset(&InHeader, 0, sizeof(InHeader));
+    InData = new CUSRPData;
+    OutData = new CUSRPData;
 }
 
 
 CUSRP::~CUSRP()
 {
-
+    delete InData;
+    delete OutData;
 }
 
 
-int CUSRP::Init(char *AudioDevice)
+int CUSRP::Init(const char *NodeName, char *AudioDevice, ClientInfo *pAudioC)
 {
     int Ret = 0;
 
-
     char AddressBuf[256];
-    int PortIn = 0;
-    int PortOut = 0;
+    PortIn = 0;
+    PortOut = 0;
+
+    AudioC = pAudioC;
 
     // hack better parsing
     char *PortBegin = strstr(AudioDevice, ":");
@@ -41,6 +101,19 @@ int CUSRP::Init(char *AudioDevice)
 
     // todo error handling.
     LOG_NORM(("%s#%d: USRP \"%s:%u, output %u\"\n",__FUNCTION__,__LINE__,AddressBuf, PortIn, PortOut));
+
+    // Create & open a named pipe.
+    char PipeName[256];
+    sprintf(PipeName, "/tmp/usrp_pipe_%s_%u_%u", NodeName, PortIn, PortOut);
+    mkfifo(PipeName, O_RDWR);
+    chmod(PipeName, 0666);
+
+    if((pAudioC->Socket = open(PipeName,0666)) < 0) {
+        LOG_ERROR(("%s#%d: open(\"%s\") failed: %s",__FUNCTION__,__LINE__,PipeName,
+                        Err2String(errno)));
+        Ret = ERR_AUDIO_DEV_OPEN;
+    }
+
 
     // In
     if ((InSock = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
@@ -94,39 +167,7 @@ int CUSRP::Init(char *AudioDevice)
 
 bool CUSRP::PollCOS()
 {
-    // TODO: Mutex.
-    return InHeader.Ptt;
-}
-
-//static
-void* CUSRP::StaticSendMain( void* pParam )
-{
-    return ((CUSRP*)pParam)->SendMain();
-}
-
-
-//static
-void* CUSRP::StaticRecvMain( void* pParam )
-{
-    return ((CUSRP*)pParam)->RecvMain();
-}
-
-
-void* CUSRP::SendMain()
-{
-    char OutRecvData[1024];
-    USRPHeader *UsrpHeader = reinterpret_cast<USRPHeader *>(OutRecvData);
-    memcpy(UsrpHeader->Usrp, "USRP", 4);
-    UsrpHeader->SequenceNum = 0;
-    UsrpHeader->Memory = 0;
-    UsrpHeader->Ptt = 0;
-    UsrpHeader->Talkgroup = 0;
-    UsrpHeader->Type = USRP_TYPE_VOICE;
-    UsrpHeader->Mpxid = 0;
-    UsrpHeader->Reserved = 0;
-    
-    LOG_NORM(("%s#%d: SendMain exit\n",__FUNCTION__,__LINE__));
-    return NULL;
+    return InData->GetHeader().Ptt;
 }
 
 
@@ -135,10 +176,28 @@ int CUSRP::Read(short *OutData, int MaxRead)
     const int READ_SIZE = USRP_VOICE_FRAME_SIZE * sizeof(short); 
     assert(MaxRead >= READ_SIZE);
 
-    memcpy(OutData, &InAudioBuffer[InAudioBufferReadOff], READ_SIZE);
-    InAudioBufferReadOff = (InAudioBufferReadOff + USRP_VOICE_FRAME_SIZE) % USRP_VOICE_BUFFER_SIZE;
+    // We prob only want to read from the socket, but keep an internal buffer
+    // whilst iterating for now.
+    if(InData->Read(OutData, MaxRead) > 0)
+    {
+        size_t ReadSize = read(AudioC->Socket, OutData, MaxRead);
+        InData->AudioFrames -= ReadSize / sizeof(short);
+        return ReadSize;
+    }
+    return 0;
+}
 
-    return (bRunning && !bShutdown) ? 0 : 0;
+
+int CUSRP::Write(const short *FrameData, int SizeBytes)
+{
+    return OutData->Write(FrameData, SizeBytes);
+}
+
+
+//static
+void* CUSRP::StaticRecvMain( void* pParam )
+{
+    return ((CUSRP*)pParam)->RecvMain();
 }
 
 
@@ -150,8 +209,40 @@ void* CUSRP::RecvMain()
     short *UsrpVoiceFrame = reinterpret_cast<short *>(UsrpHeader + 1);
 
     do {
-        InBytesRead = recvfrom(InSock, InRecvData, 1024,0,
-                        (struct sockaddr *)&InClientAddr, &InAddrLen);
+        if(PortOut != 1337)
+        {
+            InBytesRead = recvfrom(InSock, InRecvData, 1024,0,
+                            (struct sockaddr *)&InClientAddr, &InAddrLen);
+        }
+        else
+        {
+            InBytesRead = USRP_VOICE_BUFFER_FRAME_SIZE * sizeof(short);
+            UsrpHeader->Usrp[0] = 'U';
+            UsrpHeader->Usrp[1] = 'S';
+            UsrpHeader->Usrp[2] = 'R';
+            UsrpHeader->Usrp[3] = 'P';
+            UsrpHeader->SequenceNum = htonl(ntohl(UsrpHeader->SequenceNum) + 1);
+            UsrpHeader->Memory = 0;
+            UsrpHeader->Ptt = 1;
+            UsrpHeader->Talkgroup = 1337;
+            UsrpHeader->Type = USRP_TYPE_VOICE;
+            UsrpHeader->Mpxid = 0;
+            UsrpHeader->Reserved = 0;
+
+            for(int i = 0; i < USRP_VOICE_FRAME_SIZE; ++i)
+            {
+                float val = ( (float)i / (float)USRP_VOICE_FRAME_SIZE ) * 3.14159*2.0;
+                float val2 = sin(val);
+                UsrpVoiceFrame[i] = (short)(sin( val ) * 15000.0f);
+            }
+
+            usleep(2000000);
+
+            while( InData->AudioFrames > 2 * USRP_VOICE_FRAME_SIZE )
+            {
+                usleep(20000);
+            }
+        }
 
         // Since it's coming over UDP, we expect at least 32 bytes.
         if(InBytesRead >= 32) {
@@ -161,19 +252,25 @@ void* CUSRP::RecvMain()
             }
 
             // Check sequence validity.
-            if((int)(ntohl(UsrpHeader->SequenceNum) - InSequenceNum) <= 0) {
-                LOG_NORM(("%s#%d: USRP Packet out of sequence, size %i\n",__FUNCTION__,__LINE__, InBytesRead));
+            if((int)(ntohl(UsrpHeader->SequenceNum) - InData->SequenceNum) <= 0) {
+                LOG_NORM(("%s#%d: USRP Packet out of sequence (Is %u, Expecting > %u), size %i\n",__FUNCTION__,__LINE__, UsrpHeader->SequenceNum, InData->SequenceNum, InBytesRead));
                 continue;
             }
 
+            InData->SequenceNum = ntohl(UsrpHeader->SequenceNum);
+
             // TODO: Mutex.
-            InHeader = *UsrpHeader;
+            InData->Header = *UsrpHeader;
 
             switch(UsrpHeader->Type)
             {
             case USRP_TYPE_VOICE:
-                memcpy(&InAudioBuffer[InAudioBufferWriteOff], UsrpVoiceFrame, USRP_VOICE_FRAME_SIZE * sizeof(short));
-                InAudioBufferWriteOff = (InAudioBufferWriteOff + USRP_VOICE_FRAME_SIZE) % USRP_VOICE_BUFFER_SIZE;
+                {
+                    const size_t CopySize = USRP_VOICE_FRAME_SIZE * sizeof(short);
+
+                    InData->Write(UsrpVoiceFrame, CopySize);
+                    write(AudioC->Socket, UsrpVoiceFrame, CopySize);
+                }
                 break;
 
             case USRP_TYPE_DTMF:
