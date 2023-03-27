@@ -49,6 +49,18 @@ struct USRPHeader
 };
 
 
+struct __attribute__ ((packed)) USRPMetaData
+{
+    uint32_t TLVTag : 8;
+    uint32_t TLVLength : 8;
+    uint32_t DmrID : 24;
+    uint32_t RepeaterID : 32; 
+    uint32_t Talkgroup : 24;
+    uint32_t Timeslot : 8;
+    uint32_t ColorCode : 8;
+    char Callsign[16]; 
+};
+
 typedef struct ClientInfo_TAG ClientInfo;
 
 class CUSRP
@@ -84,6 +96,9 @@ private:
 
     struct CUSRPData* InData;
     struct CUSRPData* OutData;
+
+
+    uint32_t PTTCount = 0;
 
 
 
