@@ -35,6 +35,11 @@ enum
     USRP_VOICE_BUFFER_FRAME_SIZE = USRP_VOICE_FRAME_SIZE * USRP_VOICE_FRAMES_MAX,
 };
 
+union USRPIPAdrUnion           // Don't want to pull in main.h for IPAdrUnion
+{
+   struct sockaddr s;
+   struct sockaddr_in i;
+};
 
 struct USRPHeader
 {
@@ -80,8 +85,6 @@ public:
 private:
 	static void* StaticRecvMain( void* pParam );
 	void* RecvMain();
-
-    struct CUSRPImpl* pImpl;
         
     pthread_t SendThread;
     pthread_t RecvThread;
@@ -91,21 +94,16 @@ private:
 
     ClientInfo *AudioC = NULL;
 
-    struct sockaddr_in InServerAddr;
-    struct sockaddr_in InClientAddr;
     int InSock;
+    USRPIPAdrUnion InAddr;
     socklen_t InAddrLen;
 
+    int OutSock;
+    USRPIPAdrUnion OutAddr;
+    socklen_t OutAddrLen;
+
     struct CUSRPData* InData;
-    struct CUSRPData* OutData;
-
-
-    uint32_t PTTCount = 0;
-
-
-
-
-
+    struct CUSRPAudio* OutAudio;
 };
 
 
