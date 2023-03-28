@@ -210,7 +210,6 @@ void CUSRP::KeyTx(int bKey)
     {
         OutAudio->IsKeyed = bKey;
 
-
         if( bKey )
         {
             char OutSendData[1024];
@@ -281,7 +280,7 @@ int CUSRP::Write(const short *FrameData, int SizeBytes)
         while( OutAudio->AudioFrames >= USRP_VOICE_FRAME_SIZE )
         {
             OutAudio->Read(reinterpret_cast<short*>(UsrpHeader + 1), USRP_VOICE_FRAME_SIZE * 2);
-            *UsrpHeader = CreateUSRPVoiceHeader( 1, 0, OutAudio->SequenceNum++ );
+            *UsrpHeader = CreateUSRPVoiceHeader( OutAudio->IsKeyed, 0, OutAudio->SequenceNum++ );
             *UsrpHeader = USRPHeaderToNetworkByteOrder( *UsrpHeader );
 
             ::sendto(OutSock,
