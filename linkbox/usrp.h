@@ -71,9 +71,11 @@ public:
 
     int Init(const char *NodeName, char *AudioDevice, ClientInfo *pAudioC);
     bool PollCOS();
+    void KeyTx(int bKey);
 
     int Read(short *OutData, int MaxRead);
     int Write(const short *FrameData, int SizeBytes);
+
 
 private:
 	static void* StaticRecvMain( void* pParam );

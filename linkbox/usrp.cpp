@@ -20,12 +20,10 @@
 struct CUSRPData
 {
     uint32_t SequenceNum = 0;
-    short AudioBuffer[USRP_VOICE_BUFFER_FRAME_SIZE];        // 8kHz 16-bit signed
-    int AudioBufferWriteOff = 0;
-    int AudioBufferReadOff = 0;
-    int AudioFrames = 0;                                    
     USRPHeader Header = {};                                 // TODO: Buffer...?
 
+    USRPHeader HeaderHistory[8];
+    int HeaderHistoryIdx = 0;
 
     mutable std::mutex Mutex;
 
@@ -33,37 +31,6 @@ struct CUSRPData
     {
         //std::lock_guard<std::mutex> Lock( Mutex );
         return Header;
-    }
-
-    int Read(short* FrameData, size_t BytesSize)
-    {
-        //std::lock_guard<std::mutex> Lock( Mutex );
-        
-        const int READ_SIZE = USRP_VOICE_FRAME_SIZE * sizeof(short); 
-        assert(BytesSize >= READ_SIZE);
-
-        if( AudioFrames >= BytesSize )
-        {
-            memcpy(FrameData, &AudioBuffer[AudioBufferReadOff], BytesSize);
-            AudioBufferWriteOff = (AudioBufferWriteOff + BytesSize) % USRP_VOICE_BUFFER_FRAME_SIZE;
-            AudioFrames -= BytesSize / sizeof(short);
-            return BytesSize;
-        }
-        return 0;
-    }
-
-    int Write(const short* FrameData, size_t BytesSize)
-    {
-        //std::lock_guard<std::mutex> Lock( Mutex );
-
-        if( AudioFrames < USRP_VOICE_BUFFER_FRAME_SIZE * sizeof(short) )
-        {
-            memcpy(&AudioBuffer[AudioBufferWriteOff], FrameData, BytesSize);
-            AudioBufferWriteOff = (AudioBufferWriteOff + BytesSize) % USRP_VOICE_BUFFER_FRAME_SIZE;
-            AudioFrames += BytesSize / sizeof(short);
-            return BytesSize;
-        }
-        return 0;
     }
 };
 
@@ -200,7 +167,13 @@ int CUSRP::Init(const char *NodeName, char *AudioDevice, ClientInfo *pAudioC)
 
 bool CUSRP::PollCOS()
 {
-    return InData->AudioFrames > 0 || !!InData->GetHeader().Ptt;
+    return !!InData->GetHeader().Ptt;
+}
+
+
+void CUSRP::KeyTx(int bKey)
+{
+
 }
 
 
@@ -209,41 +182,26 @@ int CUSRP::Read(short *OutData, int MaxRead)
     const int READ_SIZE = USRP_VOICE_FRAME_SIZE * sizeof(short); 
     assert(MaxRead >= READ_SIZE);
 
-	// Check that the readfrom() won't block
-	fd_set readFds;
-	FD_ZERO(&readFds);
-	FD_SET(AudioC->Socket, &readFds);
+    // Check if we have data ready to read with immediate timeout.
+    fd_set ReadFds;
+    FD_ZERO(&ReadFds);
+    FD_SET(AudioC->Socket, &ReadFds);
 
-	// Return immediately
-	timeval tv;
-	tv.tv_sec  = 0L;
-	tv.tv_usec = 0L;
-
-	int ret = ::select(AudioC->Socket + 1, &readFds, NULL, NULL, &tv);
-	if (ret <= 0) {
+    timeval Timeval { 0L, 0L };
+    int Ret = ::select(AudioC->Socket + 1, &ReadFds, NULL, NULL, &Timeval);
+    if (Ret <= 0) {
         return 0;
     }
 
-    // We prob only want to read from the socket, but keep an internal buffer
-    // whilst iterating for now.
-    //if(InData->Read(OutData, MaxRead) > 0)
-    {
-        size_t ReadSize = read(AudioC->Socket, OutData, MaxRead);
-        InData->AudioFrames -= ReadSize / sizeof(short);
-        return ReadSize;
-    }
-    return 0;
+    return ::read(AudioC->Socket, OutData, MaxRead);
 }
 
 
 int CUSRP::Write(const short *FrameData, int SizeBytes)
 {
-    int RetVal = OutData->Write(FrameData, SizeBytes);
-    if(RetVal > 0)
-    {
-        // Write out USRP packets.
-    }
-    return RetVal;
+    // TODO: Write USRP packet and send.
+
+    return SizeBytes;
 }
 
 
@@ -262,44 +220,8 @@ void* CUSRP::RecvMain()
     short *UsrpVoiceFrame = reinterpret_cast<short *>(UsrpHeader + 1);
 
     do {
-        // Receive data.
-        if(PortOut != 1337)
-        {
-            InBytesRead = recvfrom(InSock, InRecvData, 1024,0,
-                            (struct sockaddr *)&InClientAddr, &InAddrLen);
-        }
-        else
-        {
-            InBytesRead = USRP_VOICE_BUFFER_FRAME_SIZE * sizeof(short);
-
-            *UsrpHeader = CreateUSRPVoiceHeader(1, 1337, UsrpHeader->SequenceNum + 1);
-
-            UsrpHeader->Usrp[0] = 'U';
-            UsrpHeader->Usrp[1] = 'S';
-            UsrpHeader->Usrp[2] = 'R';
-            UsrpHeader->Usrp[3] = 'P';
-            UsrpHeader->SequenceNum = UsrpHeader->SequenceNum;
-            UsrpHeader->Memory = 0;
-            UsrpHeader->Ptt = 1;
-            UsrpHeader->Talkgroup = 1337;
-            UsrpHeader->Type = USRP_TYPE_VOICE;
-            UsrpHeader->Mpxid = 0;
-            UsrpHeader->Reserved = 0;
-
-            for(int i = 0; i < USRP_VOICE_FRAME_SIZE; ++i)
-            {
-                float val = ( (float)i / (float)USRP_VOICE_FRAME_SIZE ) * 3.14159*2.0;
-                float val2 = sin(val);
-                UsrpVoiceFrame[i] = (short)(sin( val ) * 15000.0f);
-            }
-
-            usleep(2000000);
-
-            while( InData->AudioFrames > 2 * USRP_VOICE_FRAME_SIZE )
-            {
-                usleep(20000);
-            }
-        }
+        InBytesRead = ::recvfrom(InSock, InRecvData, 1024,0,
+                        (struct sockaddr *)&InClientAddr, &InAddrLen);
 
         // Process data.
         std::lock_guard<std::mutex> Lock(InData->Mutex);
@@ -312,21 +234,31 @@ void* CUSRP::RecvMain()
                 continue;
             }
 
-            // Check sequence validity.
-            if((int)(UsrpHeader->SequenceNum - InData->SequenceNum) <= 0) {
-                LOG_NORM(("%s#%d: USRP Packet out of sequence (Is %u, Expecting > %u), size %i\n",__FUNCTION__,__LINE__, UsrpHeader->SequenceNum, InData->SequenceNum, InBytesRead));
-            }
-
-            InData->SequenceNum = UsrpHeader->SequenceNum;
+            InData->HeaderHistory[InData->HeaderHistoryIdx] = *UsrpHeader;
+            InData->HeaderHistoryIdx = (InData->HeaderHistoryIdx + 1) % 8;
+ 
             InData->Header = *UsrpHeader;
 
             switch(UsrpHeader->Type)
             {
             case USRP_TYPE_VOICE:
                 {
+                    // Check sequence validity if PTT.
+                    if(UsrpHeader->Ptt)
+                    {
+                        if((int)(UsrpHeader->SequenceNum - InData->SequenceNum) <= 0) {
+                            LOG_NORM(("%s#%d: USRP Packet out of sequence (Is %u, Expecting > %u), size %i\n",__FUNCTION__,__LINE__, UsrpHeader->SequenceNum, InData->SequenceNum, InBytesRead));
+                        }
+                        InData->SequenceNum = UsrpHeader->SequenceNum;
+                    }
+                    else
+                    {
+                        // No PTT, reset sequence number.
+                        InData->SequenceNum = 0;
+                    }
+
                     const size_t CopySize = USRP_VOICE_FRAME_SIZE * sizeof(short);
-                    //InData->Write(UsrpVoiceFrame, CopySize);
-                    write(AudioC->Socket, UsrpVoiceFrame, CopySize);
+                    ::write(AudioC->Socket, UsrpVoiceFrame, CopySize);
                 }
                 break;
 
@@ -343,6 +275,9 @@ void* CUSRP::RecvMain()
                         metaData->RepeaterID = htonl(metaData->RepeaterID);
                         metaData->Talkgroup = htonl(metaData->Talkgroup) >> 8;
                         LOG_NORM(("%s#%d: Set Info: DMR ID: %u, Callsign: %s, Repeater ID: %u, Talkgroup: %u\n",__FUNCTION__,__LINE__, metaData->DmrID, metaData->Callsign, metaData->RepeaterID, metaData->Talkgroup) );
+
+                        // Initialize sequence number.
+                        InData->SequenceNum = UsrpHeader->SequenceNum;
                     }
                 }
                 break;

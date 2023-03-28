@@ -667,7 +667,7 @@ void CPort::KeyTx(int bKey)
             break;
          }
 
-         //Usrp->KeyTx(bKey);
+         Usrp->KeyTx(bKey);
          break;
 #endif // #ifdef USRP_SUPPORT
    }
@@ -1078,53 +1078,53 @@ int CPort::WriteAudioOut(ClientInfo *p)
 #ifdef USRP_SUPPORT
          if(IsUSRPDevice)
          {
-            // Write to USRP, plus the COS, PTT, etc... status.
+            wrote = Usrp->Write((const short*)pWriteData,WriteSize);
          }
          else
 #endif // #ifdef USRP_SUPPORT
          {
             Bytes2Write = min(BufInfo.fragsize,WriteSize);
             wrote = write(p->Socket,pWriteData,Bytes2Write);
+         }
 
-            D3PRINTF(("Wr: requested %d, wrote %d/%d, pid: %d\n",Bytes2Write,wrote,
-                  BufInfo.bytes,(int) getpid()));
+         D3PRINTF(("Wr: requested %d, wrote %d/%d, pid: %d\n",Bytes2Write,wrote,
+               BufInfo.bytes,(int) getpid()));
 
-            if(wrote <= 0) {
-               if(errno == EAGAIN) {
-                  WriteWaits++;
-                  p->bWriteWait = TRUE;
-                  D2PRINTF(("W"));
-               }
-               else {
-                  LOG_ERROR(("WriteAudioOut(): write() failed: %s",
-                           Err2String(errno)));
-               }
-               break;
+         if(wrote <= 0) {
+            if(errno == EAGAIN) {
+               WriteWaits++;
+               p->bWriteWait = TRUE;
+               D2PRINTF(("W"));
             }
             else {
-               if(DebugFpAudioOut != NULL) {
-                  fwrite(pWriteData,wrote,1,DebugFpAudioOut);
-               }
-               else if(pAudioSlave != NULL &&
-                     pAudioSlave->DebugFpAudioOut != NULL)
-               {
-                  fwrite(pWriteData,wrote,1,pAudioSlave->DebugFpAudioOut);
-               }
-               D2PRINTF(("w"));
-               HangTimer.tv_sec = 0;
-               if(pAudioSlave != NULL) {
-                  pAudioSlave->HangTimer.tv_sec = 0;
-               }
-               Ret = TRUE;
+               LOG_ERROR(("WriteAudioOut(): write() failed: %s",
+                        Err2String(errno)));
             }
-            pWriteData += wrote;
-            WriteSize -= wrote;
-            if(MasterSamples > 0 && !bTxKeyed) {
-               KeyTx(TRUE);
+            break;
+         }
+         else {
+            if(DebugFpAudioOut != NULL) {
+               fwrite(pWriteData,wrote,1,DebugFpAudioOut);
             }
-            if(SlaveSamples > 0 && !pAudioSlave->bTxKeyed) {
-               pAudioSlave->KeyTx(TRUE);
+            else if(pAudioSlave != NULL &&
+                  pAudioSlave->DebugFpAudioOut != NULL)
+            {
+               fwrite(pWriteData,wrote,1,pAudioSlave->DebugFpAudioOut);
             }
+            D2PRINTF(("w"));
+            HangTimer.tv_sec = 0;
+            if(pAudioSlave != NULL) {
+               pAudioSlave->HangTimer.tv_sec = 0;
+            }
+            Ret = TRUE;
+         }
+         pWriteData += wrote;
+         WriteSize -= wrote;
+         if(MasterSamples > 0 && !bTxKeyed) {
+            KeyTx(TRUE);
+         }
+         if(SlaveSamples > 0 && !pAudioSlave->bTxKeyed) {
+            pAudioSlave->KeyTx(TRUE);
          }
       }
 

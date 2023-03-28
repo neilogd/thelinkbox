@@ -285,7 +285,7 @@ public:
 
 #ifdef USRP_SUPPORT
    class CUSRP *Usrp;
-#endif USRP_SUPPORT
+#endif // USRP_SUPPORT
 
 private:
    struct timeval LastCOSPoll;
