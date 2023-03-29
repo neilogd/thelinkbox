@@ -46,11 +46,12 @@ struct CUSRPAudio
     {
         const int READ_SIZE = USRP_VOICE_FRAME_SIZE * sizeof(short); 
         assert(BytesSize >= READ_SIZE);
+        const int FRAMES_SIZE = BytesSize / sizeof(short);
 
-        if( AudioFrames >= (BytesSize / sizeof(short)) )
+        if( AudioFrames >= FRAMES_SIZE )
         {
             memcpy(FrameData, &AudioBuffer[AudioBufferReadOff], BytesSize);
-            AudioBufferWriteOff = (AudioBufferWriteOff + BytesSize) % USRP_VOICE_BUFFER_FRAME_SIZE;
+            AudioBufferReadOff = (AudioBufferReadOff + FRAMES_SIZE) % USRP_VOICE_BUFFER_FRAME_SIZE;
             AudioFrames -= BytesSize / sizeof(short);
             return BytesSize;
         }
@@ -59,10 +60,11 @@ struct CUSRPAudio
 
     int Write(const short* FrameData, size_t BytesSize)
     {
+        const int FRAMES_SIZE = BytesSize / sizeof(short);
         if( AudioFrames < USRP_VOICE_BUFFER_FRAME_SIZE * sizeof(short) )
         {
             memcpy(&AudioBuffer[AudioBufferWriteOff], FrameData, BytesSize);
-            AudioBufferWriteOff = (AudioBufferWriteOff + BytesSize) % USRP_VOICE_BUFFER_FRAME_SIZE;
+            AudioBufferWriteOff = (AudioBufferWriteOff + FRAMES_SIZE) % USRP_VOICE_BUFFER_FRAME_SIZE;
             AudioFrames += BytesSize / sizeof(short);
             return BytesSize;
         }
@@ -208,14 +210,14 @@ void CUSRP::KeyTx(int bKey)
 {
     if( OutAudio->IsKeyed != bKey )
     {
+        char OutSendData[1024];
+        USRPHeader *UsrpHeader = reinterpret_cast<USRPHeader *>( OutSendData );
+        USRPMetaData* UsrpMetaData = reinterpret_cast<USRPMetaData *>( UsrpHeader + 1 );
+
         OutAudio->IsKeyed = bKey;
 
         if( bKey )
         {
-            char OutSendData[1024];
-            USRPHeader *UsrpHeader = reinterpret_cast<USRPHeader *>( OutSendData );
-            USRPMetaData* UsrpMetaData = reinterpret_cast<USRPMetaData *>( UsrpHeader + 1 );
-
             UsrpHeader->Usrp[0] = 'U';
             UsrpHeader->Usrp[1] = 'S';
             UsrpHeader->Usrp[2] = 'R';
@@ -224,14 +226,14 @@ void CUSRP::KeyTx(int bKey)
             UsrpHeader->Memory = 0;
             UsrpHeader->Ptt = 1;
             UsrpHeader->Talkgroup = 0;
-            UsrpHeader->Type = USRP_TYPE_VOICE;
+            UsrpHeader->Type = USRP_TYPE_TEXT;
             UsrpHeader->Mpxid = 0;
             UsrpHeader->Reserved = 0;
 
             UsrpMetaData->TLVTag = USRP_TLV_TAG_SET_INFO;
-            UsrpMetaData->TLVLength = 13 + strlen("N0CALL");
-            strcpy( UsrpMetaData->Callsign, "N0CALL");
-            UsrpMetaData->DmrID = 0;
+            UsrpMetaData->TLVLength = 13 + strlen("VK2GPU");
+            strcpy( UsrpMetaData->Callsign, "VK2GPU");
+            UsrpMetaData->DmrID = htonl(5052317) >> 8;
             UsrpMetaData->RepeaterID = 0;
             UsrpMetaData->Talkgroup = 0;
             UsrpMetaData->Timeslot = 0;
@@ -241,6 +243,26 @@ void CUSRP::KeyTx(int bKey)
 
             ::sendto(OutSock, 
                 OutSendData, sizeof(USRPHeader) + UsrpMetaData->TLVLength,
+                0, &OutAddr.s, sizeof(USRPIPAdrUnion));
+        }
+        else
+        {
+            UsrpHeader->Usrp[0] = 'U';
+            UsrpHeader->Usrp[1] = 'S';
+            UsrpHeader->Usrp[2] = 'R';
+            UsrpHeader->Usrp[3] = 'P';
+            UsrpHeader->SequenceNum = OutAudio->SequenceNum++;
+            UsrpHeader->Memory = 0;
+            UsrpHeader->Ptt = 0;
+            UsrpHeader->Talkgroup = 0;
+            UsrpHeader->Type = USRP_TYPE_VOICE;
+            UsrpHeader->Mpxid = 0;
+            UsrpHeader->Reserved = 0;
+
+            *UsrpHeader = USRPHeaderToNetworkByteOrder( *UsrpHeader );
+
+            ::sendto(OutSock, 
+                OutSendData, sizeof(USRPHeader),
                 0, &OutAddr.s, sizeof(USRPIPAdrUnion));
         }
     }
@@ -271,22 +293,25 @@ int CUSRP::Write(const short *FrameData, int SizeBytes)
 {
     char OutSendData[1024];
     USRPHeader *UsrpHeader = reinterpret_cast<USRPHeader *>( OutSendData );
-    USRPMetaData* UsrpMetaData = reinterpret_cast<USRPMetaData *>( UsrpHeader + 1 );
 
-    // TODO: Write USRP packet and send.
     if( OutAudio->IsKeyed )
     {
+        int BytesSent = 0;
         OutAudio->Write(FrameData, SizeBytes);
         while( OutAudio->AudioFrames >= USRP_VOICE_FRAME_SIZE )
         {
-            OutAudio->Read(reinterpret_cast<short*>(UsrpHeader + 1), USRP_VOICE_FRAME_SIZE * 2);
             *UsrpHeader = CreateUSRPVoiceHeader( OutAudio->IsKeyed, 0, OutAudio->SequenceNum++ );
             *UsrpHeader = USRPHeaderToNetworkByteOrder( *UsrpHeader );
+            
+            OutAudio->Read(reinterpret_cast<short*>(UsrpHeader + 1), USRP_VOICE_FRAME_SIZE * 2);
 
             ::sendto(OutSock,
-                OutSendData, sizeof(USRPHeader) + UsrpMetaData->TLVLength,
+                OutSendData, sizeof(USRPHeader) + USRP_VOICE_FRAME_SIZE * 2,
                 0, &OutAddr.s, sizeof(USRPIPAdrUnion));
+
+            BytesSent += USRP_VOICE_FRAME_SIZE * 2;
         }
+        return BytesSent;
     }
     return SizeBytes;
 }
@@ -307,8 +332,32 @@ void* CUSRP::RecvMain()
     short *UsrpVoiceFrame = reinterpret_cast<short *>(UsrpHeader + 1);
 
     do {
-        InBytesRead = ::recvfrom(InSock, InRecvData, 1024, 0,
-                        (struct sockaddr *)&InAddr, &InAddrLen);
+        // Check if we have data ready to read with timeout of a single audio frame (20ms)
+        fd_set ReadFds;
+        FD_ZERO(&ReadFds);
+        FD_SET(InSock, &ReadFds);
+
+        timeval Timeval { 0L, 20000L };
+        if( InData->Header.Ptt )
+        {
+            // Bump to 500ms timeout.
+            Timeval.tv_usec = 500000L;
+        }
+
+        int Ret = ::select(InSock + 1, &ReadFds, NULL, NULL, &Timeval);
+        if (Ret <= 0) {
+            const size_t CopySize = USRP_VOICE_FRAME_SIZE * sizeof(short);
+            memset(UsrpVoiceFrame, 0, CopySize);
+            ::write(AudioC->Socket, UsrpVoiceFrame, CopySize);
+            InBytesRead = CopySize;
+            continue;
+        }
+        else
+        {
+            // Read data.
+            InBytesRead = ::recvfrom(InSock, InRecvData, 1024, 0,
+                            (struct sockaddr *)&InAddr, &InAddrLen);
+        }
 
         // Process data.
         std::lock_guard<std::mutex> Lock(InData->Mutex);
