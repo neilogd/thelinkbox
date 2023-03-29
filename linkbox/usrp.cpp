@@ -47,7 +47,7 @@ struct CUSRPAudio
         const int READ_SIZE = USRP_VOICE_FRAME_SIZE * sizeof(short); 
         assert(BytesSize >= READ_SIZE);
 
-        if( AudioFrames >= BytesSize )
+        if( AudioFrames >= (BytesSize / sizeof(short)) )
         {
             memcpy(FrameData, &AudioBuffer[AudioBufferReadOff], BytesSize);
             AudioBufferWriteOff = (AudioBufferWriteOff + BytesSize) % USRP_VOICE_BUFFER_FRAME_SIZE;
