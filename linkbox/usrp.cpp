@@ -231,7 +231,7 @@ void CUSRP::KeyTx(int bKey)
             UsrpHeader->Reserved = 0;
 
             UsrpMetaData->TLVTag = USRP_TLV_TAG_SET_INFO;
-            UsrpMetaData->TLVLength = 13 + strlen("VK2GPU");
+            UsrpMetaData->TLVLength = 14 + strlen("VK2GPU");
             strcpy( UsrpMetaData->Callsign, "VK2GPU");
             UsrpMetaData->DmrID = htonl(5052317) >> 8;
             UsrpMetaData->RepeaterID = 0;
